@@ -1,0 +1,974 @@
+---
+title: "SDS homework 2"
+author: "Yao wateba Appeti; Haotian zhang"
+date: "1/17/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library('MASS')
+library('caTools')
+library('caret')
+library('mixtools')
+library('KScorrect')
+```
+
+
+### Data Generation 
+```{r}
+set.seed(42) 
+
+
+gen_params <- function(K){
+  k = K - 2
+  
+  p = c(0.5, rep(0.1,K-1))
+  mu    = c(0, ((0:k)/2)-1)
+  sigma  = c(1, rep(0.1,K-1)) 
+  
+  return (list(p=p,mu=mu, sigma=sigma))
+} 
+
+# To generate data of size N and k mixtures
+generate_data <- function(N, K){
+  k= K - 2
+  XX <- rnormmix(N, 
+             lambda = c(0.5, rep(0.1,K-1)), 
+             mu     = c(0, ((0:k)/2)-1), 
+             sigma  = c(1, rep(0.1,K-1)) )
+return (XX)
+}
+
+
+## Maybe Usefuls colors
+colos <- c(rgb(32/255, 74/255, 135/255, 0.7),
+           rgb(204/255, 0, 0, 0.7),
+           rgb(200/255, 141/255, 0, 0.7),
+           rgb(78/255, 153/255, 6/255, 0.7),
+           rgb(32/255, 74/255, 135/255, 0.3),
+           rgb(204/255, 0, 0, 0.3),
+           rgb(200/255, 141/255, 0, 0.3),
+           rgb(78/255, 153/255, 6/255, 0.3))
+
+# Bart data TRUE density 
+ TRUE.den = function(x) 0.5*dnorm(x, 0, 1) + 
+                                  0.1*dnorm(x,-1.0, 0.1) + 0.1*dnorm(x, -0.5, 0.1) +
+                                  0.1*dnorm(x, 0.0, 0.1) + 0.1*dnorm(x,  0.5, 0.1) +
+                                  0.1*dnorm(x, 1.0, 0.1)
+
+```
+
+
+To perform our simulations we will use two samples. A samll one with a size of 250 and a large one of 100000, taking in account the limit of our computing resources. The maximum number of mixtures is fixed to 10.
+
+
+```{r}
+# Samples sizes
+N1 <- 500
+N2 <- 100000
+
+# Max num of mixture 
+kmin = 2
+kmax = 10
+
+
+# Generate data for all mixtures for size N1
+N1_data = list()
+for (k in kmin:kmax){
+  N1_data[[k]] = generate_data(N1, k)
+}
+
+# Generate data for all mixtures for size N2
+N2_data = list()
+for (k in kmin:kmax){
+  N1_data[[k]] = generate_data(N2, k)
+}
+
+```
+
+For the two samples we co,pute the estimated density , and compare it to the TRUE Bart density .
+We can see the result on the plot below for the small sample  .
+
+```{r}
+
+# Histrograms for N1 size 
+par(mfrow = c(3,3))
+for (k in 2:kmax){
+  XX = generate_data(N1, k)
+  hist(XX, prob = T, col = gray(.8), border = NA, xlab = "x",
+     main = paste("Bart's density data- Mixture ",k,sep=""),
+     sub = paste("n = ", N1, sep = ""),
+     breaks = 50)
+  
+  # Show the data points
+  rug(XX, col = rgb(0,0,0,.5))
+  
+  # Plot the TRUE density
+  curve(TRUE.den, col = rgb(1,0,0,0.4), lwd = 3, n = 500, add = TRUE)
+  
+  # Kernel density estimate
+  # lines(density(XX),            col = colos[3], lwd = 3)   # Oversmoothing
+  lines(density(XX, bw = .08),  col = colos[4], lwd = 3)   # Just Right
+  # lines(density(XX, bw = .008), col = colos[5], lwd = 3)   # Undersmoothing
+  
+  # Add a legend
+  # legend("topright", c("TRUE","Over", "Just right", "Under"), lwd = 5,
+  #        col = c(rgb(1,0,0,0.4), colos[3], colos[4],colos[5]), cex = 0.8, bty = "n")
+  # 
+}
+
+
+```
+
+
+On this small sample using 6 or 7 mixtures seems to reproduce the bart density well enough . To make things clear let 
+reproduce the same thing on a larger sample .
+
+
+```{r}
+
+# Histrograms for N2 size 
+par(mfrow = c(3,3))
+for (k in 2:kmax){
+  XX = generate_data(N2, k)
+  hist(XX, prob = T, col = gray(.8), border = NA, xlab = "x",
+     main = paste("Bart's density data - Mixture ",k,sep=""),
+     sub = paste("n = ", N2, sep = ""),
+     breaks = 50)
+  
+    # Show the data points
+  rug(XX, col = rgb(0,0,0,.5))
+  
+  # Plot the TRUE density
+  curve(TRUE.den, col = rgb(1,0,0,0.4), lwd = 3, n = 500, add = TRUE)
+  
+  # Kernel density estimate
+  # lines(density(XX),            col = colos[3], lwd = 3)   # Oversmoothing
+  lines(density(XX, bw = .08),  col = colos[4], lwd = 3)   # Just Right
+  # lines(density(XX, bw = .008), col = colos[5], lwd = 3)   # Undersmoothing
+  
+  # Add a legend
+  # legend("topright", c("TRUE","Over", "Just right", "Under"), lwd = 5,
+  #        col = c(rgb(1,0,0,0.4), colos[3], colos[4],colos[5]), cex = 0.8, bty = "n")
+  # 
+  
+}
+
+
+```
+
+
+
+
+At this point we can see that using 6 components is the best choice . But to prove we will try to fit bart density data 
+with a mixture various gaussian  densities to see which one is the best .
+
+
+#### Handmade EM fit function for k >=2 mixtures
+
+```{r}
+# Function to compute  density and TRUE density on mixtures
+
+compute_density <- function(x,p,mu,sigma){
+  nmix = length(mu)
+  out = 0
+  for (k in 1:nmix){
+    out = out +p[k]* dnorm(x,mu[k],sigma[k])
+  }
+  
+  return(out)
+}
+
+# EM function 
+handmade.em <- function(y, p, mu, sigma, n_iter ,plot_flag = T)
+{
+  
+  # Number of mixtures 
+  nmix <- length(p)
+
+  
+  # Init k components
+  cols     <- rep(rgb(1,0,0,.3), nmix)
+  like <- 0
+  for (k in 1:nmix){
+    like     <- like + p[k]*dnorm(y, mu[k], sigma[k]) 
+  }
+  loglikehood = sum(log(like))
+  deviance <- -2*loglikehood
+  
+  matrix_num_col = 3*nmix + 2
+  res      <- matrix(NA,n_iter + 1, matrix_num_col)
+  res[1,]  <- c(0, p, mu, sigma, deviance)
+  for (iter in 1:n_iter) {
+    
+    #To get out of loop , when predicting
+    if(n_iter==0){
+      break
+    }
+    
+    # E step
+    d = list()
+    d_sum = 0
+    for (k in 1:nmix){
+      d[[k]] <- p[k]*dnorm(y, mu[k], sigma[k])
+      d_sum  <- d_sum + d[[k]] 
+    }
+    
+    
+    r = list()
+    for (k in 1:nmix){
+      r[[k]] <- d[[k]] / d_sum
+    }
+      
+    # M step
+    for (k in 1:nmix){
+      rk <- r[[k]] 
+      p[k] <- mean(rk)
+      mu[k] <- sum(rk*y)/sum(rk)
+      sigma[k] <-sqrt( sum(rk*(y^2))/sum(rk) - (mu[k])^2 )
+    }
+ 
+    # -2 x log-likelihood (a.k.a. deviance)
+    v_like     <- list()
+    like <- 0
+    
+    for (k in 1:nmix){
+      lk <- p[k]*dnorm(y, mu[k], sigma[k]) 
+      v_like[[k]]     <-  lk
+      like <- like + lk
+    }
+    
+    loglikehood = sum(log(like))
+    deviance <- -2*loglikehood
+    
+    # Save
+    res[iter+1,] <- c(iter, p, mu, sigma, deviance)
+    
+    # Plot
+    if (plot_flag){
+      hist(y, prob = T, breaks = 30, col = gray(.8), border = NA, 
+           main = "", xlab = paste("EM Iteration: ", iter, "/", n_iter, sep = ""))
+      set.seed(123)
+      
+      points(jitter(y), rep(0,length(y)), 
+             pch = 19, cex = .6, 
+             #col = cols[ (dnorm(y,mu[1],sigma[1]) > dnorm(y,mu[2],sigma[2])) + 1]
+             )
+      curve(compute_density(x,p,mu,sigma), lwd = 4, col = rgb(0,0,0,.5), add = TRUE)
+      curve(TRUE.den, lwd = 4, col = rgb(0,0,0,.5), add = TRUE)
+      Sys.sleep(1.5)
+    }
+  }
+  res <- data.frame(res)
+  names(res) <- c('Iteration',paste('p',1:nmix, sep=''),paste('mu',1:nmix, sep=''),paste('sigma',1:nmix, sep=''),'Deviance')
+  out <- list(parameters = c(p = p, mu = mu,  sigma = sigma), 
+              deviance = deviance, 
+              res = res,
+              p = p,
+              mu = mu,
+              sigma=sigma,
+              loglik = loglikehood
+            )
+  return(out)
+}
+```
+
+
+```{r}
+require(ggplot2)
+require(gridExtra)
+plotConvMC <- function(df, title = NULL)
+{
+  G      <- (ncol(df)-2)/3
+  df$rep <- as.factor(df$rep)
+  graf   <- vector("list", ncol(df)-2)
+  for (j in (2:(ncol(df)-1))) {
+    grafj <- ggplot(df) + geom_line(aes_string(df[,1],df[,j],
+                                               color = df[,ncol(df)])) +
+      xlab("iteration") + ylab(names(df[j])) + theme(legend.position = "none")
+    graf[[j-1]] <- grafj
+  }
+  do.call("grid.arrange", c(graf, ncol = 3, top = title))
+}
+
+```
+
+
+#### Simulation params
+
+
+```{r}
+set.seed(1234)
+M = 100
+n_iters = 20
+```
+
+### AIC
+
+#### Simulation of small sample
+
+```{r,warning=FALSE , cache=TRUE}
+par(mfrow = c(3,3))
+
+best_aic = Inf
+aic_best_fit = NULL
+
+# We run simulation 
+for(k in 2:kmax){
+  D.em <- NULL
+ 
+  for (m in (1:M)) {
+    data   = generate_data(N1,6)
+    
+    # get params for k mixtures
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    hem_fit = handmade.em(data, p  ,mu,  sigma ,n_iters, plot_flag = F)
+    
+    # AIC is computed using deviance 
+    aic =  hem_fit$deviance + 2*length(hem_fit$parameters)
+   
+    # To handle NaN output
+    if (is.nan(aic)){
+      aic = Inf
+    }
+    if (aic < best_aic){
+      aic_best_fit = hem_fit
+      best_m = k
+      
+      #update best aic
+      best_aic = aic
+      
+    }
+
+  }
+}
+
+# summary for best model
+summary(aic_best_fit)
+
+
+```
+
+
+As shown on the results the number of components in the best model is 6 , corresponding to the lowest AIC value.
+
+
+#### Simulation of large sample
+
+```{r,warning=FALSE}
+set.seed(1234)
+M = 20
+kmax = 10
+N2 = 100000
+best_aic = Inf
+aic_best_fit = NULL
+
+# We run simulation 
+for(k in 2:kmax){
+  aics = c()
+  for (m in (1:M)) {
+    data   = generate_data(N2,6)
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    hem.fit = handmade.em(data, p  ,mu,  sigma ,n_iter = 20, plot_flag = F)
+    
+    aic = hem.fit$deviance + 2*length(hem.fit$parameters)
+   
+    if (is.nan(aic)){
+      aic = Inf
+    }else{
+      aics = append(aics,aic)
+    }
+    
+    if (aic < best_aic){
+      aic_best_fit = hem.fit
+      best_m = k
+      
+      best_aic = aic
+    }
+   
+  }
+  
+  print(paste('k = ',k , ',   AIC = ',mean(aics), sep = ''))
+}
+
+
+# summary for best model
+
+print('summary for best model' )
+summary(aic_best_fit)
+
+```
+
+
+
+The strange thing with the AIC metric on large sample is that it keeps changing for larger values of the sample . Sometimes give 6 components , sometimes 7 or 9. So we cannot conclude on the right number of component at this point . And adding also the mean of all aic computed for every component . It's point out models with 6 components as best in average. But the best model in absolute has 8 components.  So number of components not really clear. Surely for a really high sample the result wil be better, our computation capacities for now doe not allow to test that.
+
+
+
+### BIC
+
+#### BIC on small sample 
+
+
+```{r,warning=FALSE, cache=TRUE}
+set.seed(1234)
+M = 100
+kmax = 10
+best_bic = Inf
+bic_best_fit = NULL
+
+# We run simulation 
+for(k in 2:kmax){
+  D.em <- NULL
+  for (m in (1:M)) {
+    
+    data   = generate_data(N1,6)
+    
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    hem_fit = handmade.em(data, p  ,mu,  sigma ,n_iter = 20, plot_flag = F)
+    
+    bic = hem.fit$deviance + log(N1)*length(hem.fit$parameters)
+    if (is.nan(bic)){
+      bic = Inf
+    }
+    if (bic < best_bic){
+      bic_best_fit = hem_fit
+      best_bic <- bic
+      
+      best_m = k
+    }
+    
+    # df.em <- hem_fit$res
+    # df.em$rep <- m
+    # D.em <- rbind(D.em,df.em)
+  }
+  #plotConvMC(D.em)
+}
+
+summary(bic_best_fit)
+
+```
+
+
+Here the best model is obtained for 2 components .
+
+
+
+#### BIC on large sample 
+
+
+```{r,warning=FALSE , cache=TRUE}
+set.seed(1234)
+M = 10
+kmax = 10
+N2 = 10000
+best_bic = Inf
+bic_best_fit = NULL
+
+# We run simulation 
+for(k in 2:kmax){
+  D.em <- NULL
+  for (m in (1:M)) {
+    data   = generate_data(N2,6)
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    hem_fit = handmade.em(data, p  ,mu,  sigma ,n_iter = 20, plot_flag = F)
+    bic = hem_fit$deviance + log(N1)*length(hem_fit$parameters)
+    
+    if (is.nan(bic)){
+      bic = Inf
+    }
+    
+    if (bic < best_bic){
+      bic_best_fit = hem_fit
+      best_bic <- bic
+     
+      best_m = k
+    }
+    
+  }
+  
+}
+
+summary(bic_best_fit)
+
+```
+
+
+Testing on a larger dataset , the best model is obtained for 6 components
+
+
+## Sample splitting
+
+In this part what we do is to fit many time on Bart density generated data , various models with mixture from 2 to 10. We then predict on the test model. Essentially we will use our handmade fit function for one iteration with the parameters provided by the training steps,setting n_iter = 0.
+
+We will simply take in account the deviance returned by our function ; which is a good model fitness metric.
+
+Then for all mixtures we compute the mean of all test deviance to see which mixture has th lowest deviance
+
+That mixture represent the number of component to correctly estimate the model.
+
+```{r}
+# Function to perform sample and fit 
+sample_and_fit <- function(N, train_size,kmax,M){
+  kmin = 2
+  all_deviances = c()
+for (k in kmin:kmax){
+  mixture_deviance = c()
+  for (m in 1:M){
+    #Generate Bart data
+    data   = generate_data(N,6)
+    
+    #Partition in train and test set
+    intrain <- createDataPartition(y=data,p=train_size,list=FALSE)
+    train   <- data[intrain]
+    test    <- data[-intrain]
+    
+    # Get params for k mixture
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    # Fit data
+    train_fit = handmade.em(train, p  ,mu,  sigma ,n_iter = 20, plot_flag = F)
+    
+    
+    # get fitted params from model
+    p = train_fit$p
+    mu = train_fit$mu
+    sigma = train_fit$sigma
+    
+
+    # For the prediction on test , we just put n_iter = 0
+    test_predict = handmade.em(test, p  ,mu,  sigma ,n_iter = 0, plot_flag = F)
+
+    if (!is.nan(test_predict$deviance)){
+        mixture_deviance = append(mixture_deviance, test_predict$deviance)
+    }else{
+        mixture_deviance = append(mixture_deviance, 100000) #   we add a large deviance when get Nan error
+    }
+  }
+  
+  all_deviances = append(all_deviances,mean(mixture_deviance))
+}
+
+  
+  return (all_deviances)
+}
+```
+
+
+### Sample Splitting with 50% in train and 50% in test;
+
+#### Fit on small sample
+
+```{r,warning=FALSE , cache=TRUE}
+#train_size 
+train_size = 0.5
+
+M1 = 100 # iterations for small samples
+M2 = 50  # iterations for large samples
+kmax = 10
+
+deviances_1 = sample_and_fit(N = N1,train_size = train_size ,kmax=kmax,M = M1)
+```
+
+
+```{r}
+D = NULL
+table = cbind(D,deviances_1)
+table
+```
+The lowest deviance is obtained at index 5 , corresponding to mixture 6. So the best model fitting the data 
+is the model with gaussian mixture of 6 components.
+
+
+#### Fit on large sample
+
+```{r,warning=FALSE , cache=TRUE}
+#train_size 
+train_size = 0.5
+M1 = 100 # iterations for small samples
+M2 = 50  # iterations for large samples
+kmax = 10
+
+deviances_2 = sample_and_fit(N = N2,train_size = train_size ,kmax=kmax,M = M2)
+```
+
+```{r}
+
+D = NULL
+table = cbind(D,deviances_2)
+table
+```
+
+Using half of the dataset for training and and half for testing we get 6 component as the best choice
+
+### Sample Splitting with 70% in train and 30% in test;
+
+#### Fit on small sample
+
+```{r,warning=FALSE , cache=TRUE }
+#train_size 
+train_size = 0.7
+M1 = 100 # iterations for small samples
+M2 = 50  # iterations for large samples
+kmax = 10
+
+deviances_3 = sample_and_fit(N = N1,train_size = train_size ,kmax=kmax,M = M1)
+```
+
+
+```{r}
+D = NULL
+table = cbind(D,deviances_3)
+table
+```
+
+Here we also get model with six mixture as the best one . Models with higher mixtures tend to produce Nan error.
+
+#### Fit on large sample
+
+
+```{r,warning=FALSE , cache=TRUE}
+#train_size 
+train_size = 0.7
+M1 = 100 # iterations for small samples
+M2 = 50  # iterations for large samples
+kmax = 10
+
+deviances_4 = sample_and_fit(N = N2,train_size = train_size ,kmax=kmax,M = M2)
+```
+
+
+```{r}
+D = NULL
+table = cbind(D,deviances_4)
+table
+```
+    
+  
+    
+  Fitting on larger dataset with 50 iterations, the best model turn out tou have 7 mixtures. So we retried with 100 iterations but we got the same result
+
+
+### Sample Splitting with 30% in train and 70% in test;
+
+
+#### Fit on small sample
+
+```{r,warning=FALSE, cache=TRUE}
+#train_size 
+train_size = 0.3
+M1 = 100 # iterations for small samples
+M2 = 50  # iterations for large samples
+kmax = 10
+
+deviances_5 = sample_and_fit(N = N1,train_size = train_size ,kmax=kmax,M = M1)
+```
+
+
+```{r}
+D = NULL
+table = cbind(D,deviances_5)
+table
+```
+Fitting on 30 of the data for 100 iterations the best model is with 2 mixtures 
+
+#### Fit on large sample
+
+```{r,warning=FALSE , cache=TRUE}
+#train_size 
+train_size = 0.3
+M1 = 100 # iterations for small samples
+M2 = 50  # iterations for large samples
+kmax = 10
+
+deviances_6 = sample_and_fit(N = N2,train_size = train_size ,kmax=kmax,M = M2)
+```
+
+
+```{r}
+D = NULL
+table = cbind(D,deviances_6)
+table
+```
+But doing the same on larger sample , show that the best model goes with 6 components .
+
+## Kfold Cross validation
+```{r}
+## The function to perform the k-fold validation
+kfold_cross_validation <- function(N=1000,nfolds=5,kmax=10,M=100){
+  kmin =2
+  deviances = c()
+  for(k in kmin:kmax){
+    mixture_deviance = c()
+    for (m in 1:M){
+      # We generate bart Data
+      data = generate_data(N,6)
+      
+      # We create n folds, 5 or 10
+      kfolds = createFolds(y = data, k = nfolds)
+      kfold_deviance = c() # vector to store deviance for each fold
+      
+      for (fold in kfolds){
+        
+        # divide data in train and validation
+        train   <- data[-fold]
+        validate    <- data[fold]
+        
+        # Get params for k mixtures
+        p = gen_params(k)$p
+        mu     = gen_params(k)$mu
+        sigma  = gen_params(k)$sigma
+        
+        # Fit data
+        train_fit = handmade.em(train, p  ,mu,  sigma ,n_iter = 20, plot_flag = F)
+        
+        
+        # get fitted params from model
+        p = train_fit$p
+        mu = train_fit$mu
+        sigma = train_fit$sigma
+        
+    
+        # For the prediction on test , we just put n_iter = 0
+        test_predict = handmade.em(validate, p  ,mu,  sigma ,n_iter = 0, plot_flag = F)
+        
+    
+        if (!is.nan(test_predict$deviance)){
+            kfold_deviance = append(kfold_deviance, test_predict$deviance)
+        }else{
+            kfold_deviance = append(kfold_deviance, 100000)
+        }
+      }
+      # Mean of deviance for all folds
+      kfold_deviance = mean(kfold_deviance)
+      mixture_deviance = append(mixture_deviance,kfold_deviance)
+    }
+  # Mean deviance for all simulation of mixture k
+  k_deviance = mean(mixture_deviance)
+  deviances = append(deviances,k_deviance)
+  }
+  
+  # Deviance for each mixture
+  return(deviances)
+}
+```
+
+
+
+
+### 5-fold Cross-Validation;
+#### On small sample
+```{r, warning=FALSE , cache=TRUE}
+deviances_k1 = kfold_cross_validation(N=250, M=100)
+```
+
+```{r}
+D = NULL
+table = cbind(D,deviances_k1)
+table
+```
+
+
+Performing 5 folds validations , and taking in account the deviance as fit foodness , the mean on all simulation 
+gave us  6 components as the best one , with the lowest average deviance.
+
+
+##### On Large sample
+```{r,warning=FALSE  , cache=TRUE}
+deviances_k2 = kfold_cross_validation(N=2500, M=100)
+```
+
+```{r}
+D = NULL
+table = cbind(D,deviances_k2)
+table
+```
+
+For the larger sample we took a sample ten times larger,  the mean on all simulation 
+gave us  6 components as the best one , with the lowest average deviance. But really close to the deviance of  7 and 8 component
+
+### 10-fold Cross-Validation;
+
+#### On Small sample 
+```{r,warning=FALSE, cache=TRUE}
+deviances_k3 = kfold_cross_validation(N=N1, nfolds = 10, M=50)
+```
+
+```{r}
+D = NULL
+table = cbind(D,deviances_k3)
+table
+```
+The 10 fold cross validation confirms the results of the the 5 folds validation . A shift from 6 components qs best model to 7
+
+#### On large sample 
+```{r,warning=FALSE, cache=TRUE}
+deviances_k4 = kfold_cross_validation(N=5000, nfolds = 10, M=20)
+```
+
+```{r}
+D = NULL
+table = cbind(D,deviances_k4)
+table
+```
+On a larger sample (we reduce the size on the sample for computations issues, so not so large ), we get 8 components as the best model. Model with 9 component is closer  and then model with 7, and 6 . Model with less than 6 components have a larger deviance and with 10 components we clearly see huge distance .
+
+### Wasserstein based score
+
+
+The score was computed only on kmax = 6 component .  For higher number of component , simulation works only on very large sample 
+
+#### Small  sample 
+
+```{r,warning=FALSE, cache=TRUE}
+N= 1000
+kmax = 6
+M  = 20
+k_scores = c()
+par(mfrow = c(3,3))
+for (k in 2:kmax){
+  
+  m_scores = c()
+  for(m in 1:M ){
+    data = generate_data(N,6) # bart data generation
+    
+    # split data in test and train of same size
+    intrain <- createDataPartition(y=data,p=0.5,list=FALSE)
+    train   <- data[intrain]
+    test    <- data[-intrain]
+    
+    # Get params for k mixtures
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    # on train data compute MLE
+    train_fit = handmade.em(y = train,p,mu,sigma ,n_iter = 20, F)
+    #MLE <- train_fit$loglik # to get the MLE
+  
+  
+    #Fitted params
+     p = train_fit$p
+     mu = train_fit$mu
+     sigma = train_fit$sigma
+        
+  
+    # Quantile function of k component MoG
+    Fq <- function(x){ 
+      q= qmixnorm(x, mu,sigma,pro =p )
+      return(q)  
+    }
+    
+    # On test we compute the ecdf()
+    e_cdf <- 1:length(test) / length(test)
+    Fte_inv <- function(x) {
+     q = test[min(which(e_cdf >= x))]
+     return (q)
+    }
+    
+    integrand <- function(x) {abs(Fq(x) - Fte_inv(x))}
+    #curve(integrand,from=0,to = 1,n = N)
+    Wk = integrate(integrand,0,1)
+    m_scores = append(m_scores,Wk$value)
+  
+  }
+  k_scores = append(k_scores,mean(m_scores))
+
+}
+
+```
+
+
+```{r}
+D = NULL
+table = cbind(D,k_scores)
+table
+```
+
+Here we can see the lowest score goes to model with 6 coponents , with the lowest average  Wasserstein score 
+
+#### Large  sample 
+
+```{r,warning=FALSE, cache=TRUE}
+N= 100000
+kmax = 6
+M  = 20
+k_scores_2 = c()
+par(mfrow = c(3,3))
+for (k in 2:kmax){
+  
+  m_scores_2 = c()
+  for(m in 1:M ){
+    data = generate_data(N,6) # bart data generation
+    
+    # split data in test and train of same size
+    intrain <- createDataPartition(y=data,p=0.5,list=FALSE)
+    train   <- data[intrain]
+    test    <- data[-intrain]
+    
+    # Get params for k mixtures
+    p = gen_params(k)$p
+    mu     = gen_params(k)$mu
+    sigma  = gen_params(k)$sigma
+    
+    # on train data compute MLE
+    train_fit = handmade.em(y = train,p,mu,sigma ,n_iter = 20, F)
+    #MLE <- train_fit$loglik # to get the MLE
+  
+  
+    #Fitted params
+     p = train_fit$p
+     mu = train_fit$mu
+     sigma = train_fit$sigma
+        
+  
+    # Quantile function of k component MoG
+    Fq <- function(x){ 
+      q= qmixnorm(x, mu,sigma,pro =p )
+      return(q)  
+    }
+    
+    # On test we compute the ecdf()
+    e_cdf <- 1:length(test) / length(test)
+    Fte_inv <- function(x) {
+     q = test[min(which(e_cdf >= x))]
+     return (q)
+    }
+    
+    integrand <- function(x) {abs(Fq(x) - Fte_inv(x))}
+    #curve(integrand,from=0,to = 1,n = N)
+    Wk = integrate(integrand,0,1)
+    m_scores_2 = append(m_scores_2,Wk$value)
+  
+  }
+  k_scores_2 = append(k_scores_2,mean(m_scores_2))
+
+}
+
+```
+
+```{r}
+D = NULL
+table = cbind(D,k_scores_2)
+table
+
+```
+
+
+Same results is confimed for large sample too.
